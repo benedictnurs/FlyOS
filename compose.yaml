@@ -1,0 +1,14 @@
+services:
+  flyos:
+    build: .
+    image: flyos:local
+    ports:
+      - "3000:3000"
+    environment:
+      FLY_DATA: /data/fly-data
+    volumes:
+      - fly-data:/data/fly-data
+    restart: unless-stopped
+
+volumes:
+  fly-data:

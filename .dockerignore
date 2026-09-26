@@ -1,0 +1,11 @@
+.git
+.next
+.venv
+node_modules
+__pycache__
+*.pyc
+.DS_Store
+AGENTS.md
+CLAUDE.md
+*.md
+!sim/requirements.txt
