@@ -439,3 +439,16 @@ test('scan policy learns successful altitude actions and changes real weights',a
  assert.ok(sim.sharedBrain.altitude.updates>=2);
  const model=sim.sharedBrain.altitude;sim.reset();assert.equal(sim.sharedBrain.altitude,model);
 });
+
+
+test('successful landing gives a huge dopamine boost once and reinforces saved weights',()=>{
+ const sim=new DroneSimulation({size:60,seed:1,trees:[],trenches:[],hideouts:[]});sim.setTask('find-land');
+ until(sim,()=>!!sim.contact);
+ assert.equal(sim.dopamine,3);assert.equal(sim.landingDopamineRewarded,true);
+ assert.ok(sim.rewardEvents.some(e=>e.reason==='Huge dopamine burst · successful landing'&&e.amount===500));
+ assert.ok(sim.sharedBrain.landing.reward>=500);
+ const reward=sim.reward,bursts=sim.sharedBrain.dopamineBursts;
+ sim.finalizeTrainingRun();advance(sim,3);assert.equal(sim.reward,reward);assert.equal(sim.sharedBrain.dopamineBursts,bursts);
+ const miss=coverMission(false);until(miss,()=>miss.failed,40);
+ assert.equal(miss.landingDopamineRewarded,false);assert.equal(miss.dopamine,0);
+});

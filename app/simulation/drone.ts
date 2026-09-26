@@ -13,6 +13,7 @@ export type Phase = 'Searching' | 'Acquiring' | 'Tracking' | 'Reacquiring' | 'Ca
 export type Point = {x:number;z:number};
 export const FIELD = 60;
 export const LOCK_DOPAMINE_REWARD = 75;
+export const LANDING_DOPAMINE_REWARD = 500;
 export const FAILED_LANDING_PENALTY = -250;
 export const LANDING_TIME_PENALTY_PER_SECOND = 1;
 export const LANDING_SUCCESS_RADIUS = 3;
@@ -141,7 +142,7 @@ export class DroneSimulation {
  aim:Point={x:5,z:5}; trail:Point[]=[]; coverage=new Set<string>();
  events:{time:number;text:string}[]=[]; history:{time:number;confidence:number;speed:number}[]=[];
  reward=0; rewardRate=0; rewardEvents:{time:number;amount:number;reason:string}[]=[];
- foundRewarded=false; confirmedRewarded=false; landingRewarded=false; trackingReward=0;
+ foundRewarded=false; confirmedRewarded=false; landingRewarded=false;landingDopamineRewarded=false; trackingReward=0;
  task:DroneTask='find'; success=false; completedAt:number|null=null;
  personHeight=PERSON_HEIGHT;
  contact:({time:number;wallTime:number;separation:number;point:Position3})|null=null;
@@ -419,6 +420,10 @@ export class DroneSimulation {
    }
   }
   if(this.phase==='Landed'){
+   if(this.success&&this.contact&&!this.landingDopamineRewarded){
+    this.landingDopamineRewarded=true;this.dopamine=3;this.sharedBrain.dopamineBursts++;
+    this.award(LANDING_DOPAMINE_REWARD,'Huge dopamine burst · successful landing');
+   }
    this.finishScanDecision(true);
    for(const cover of this.map.hideouts)if(Math.hypot(cover.x-d.x,cover.z-d.z)<=this.landingRadius)cover.cleared=true;
    for(const tree of this.map.trees)if(Math.hypot(tree.x-d.x,tree.z-d.z)<=this.landingRadius)tree.crownCleared=true;
