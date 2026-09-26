@@ -6,7 +6,7 @@ import {OrbitControls} from 'three/addons/controls/OrbitControls.js';
 import {PHYSICAL_SCALE} from './simulation/scale';
 import type {DroneSimulation} from './simulation/drone';
 import {terrainHeight} from './simulation/terrain';
-import {createSpreadPose} from './visualization/person-pose';
+import {createSpreadPose,personCollapseProgress} from './visualization/person-pose';
 export function World({engine,mode='orbit',droneIndex=0}:{engine:DroneSimulation;mode?:'orbit'|'top'|'drone'|'person'|'follow';droneIndex?:number}){
  const host=useRef<HTMLDivElement>(null),[status,setStatus]=useState('Loading field models…');
  useEffect(()=>{
@@ -37,11 +37,14 @@ export function World({engine,mode='orbit',droneIndex=0}:{engine:DroneSimulation
   const ring=(radius:number,color:string)=>{const m=new T.Mesh(new T.RingGeometry(radius-.07,radius,96),new T.MeshBasicMaterial({color,side:T.DoubleSide,transparent:true,opacity:.65}));m.rotation.x=-Math.PI/2;m.position.y=.06;scene.add(m);return m;};
   const launch=ring(2,'#f3efc3');launch.position.set(5,.06,5);
   const sensor=ring(1,'#d7f5ae'),targetRing=ring(1.3,'#ffe0a0'),aimRing=ring(.6,'#f6fbea');
+  const landingEffects=engine.fleet.map(()=>{
   const blast=new T.Group();scene.add(blast);blast.visible=false;
   const flash=new T.Mesh(new T.SphereGeometry(1,20,12),new T.MeshBasicMaterial({color:'#fff3bb',transparent:true,opacity:0,depthWrite:false}));blast.add(flash);
   const shockwave=ring(1,'#ffb347');shockwave.visible=false;
   const sparks=Array.from({length:28},(_,i)=>{const particle=new T.Mesh(new T.SphereGeometry(.12,6,5),new T.MeshBasicMaterial({color:i%3?'#ffaf46':'#fff4ce',transparent:true,depthWrite:false}));blast.add(particle);const a=i*2.39996;return {particle,v:new T.Vector3(Math.sin(a)*(2+i%4),2+i%5,Math.cos(a)*(2+i%4))};});
   const smoke=Array.from({length:9},(_,i)=>{const particle=new T.Mesh(new T.SphereGeometry(.6,12,8),new T.MeshBasicMaterial({color:'#778178',transparent:true,depthWrite:false}));blast.add(particle);return {particle,angle:i*2.39996};});
+  return {blast,flash,shockwave,sparks,smoke};
+  });
   // Trees within the playable field share their locations with the simulation.
   const cuts=Array.from({length:256},()=>new T.Vector4(0,0,0,1e6));
   const foliageMaterials:T.Material[]=[];
@@ -64,7 +67,7 @@ export function World({engine,mode='orbit',droneIndex=0}:{engine:DroneSimulation
   for(let i=0;i<48;i++){const a=i*2.39996,r=size*.8+(i%5)*5,x=size/2+Math.sin(a)*r,z=size/2+Math.cos(a)*r;const trunk=new T.Mesh(new T.CylinderGeometry(.25,.4,3,6),material('#7c7156'));trunk.position.set(x,1.5,z);scene.add(trunk);const crown=new T.Mesh(new T.ConeGeometry(2+i%3*.4,6+i%3,7),material(i%2?'#586f4e':'#6a8055'));crown.position.set(x,5,z);crown.castShadow=true;cutFoliage(crown);scene.add(crown);}
   const droneGroups=engine.fleet.map(()=>new T.Group()),drone=droneGroups[0],person=new T.Group();scene.add(...droneGroups,person);
   const personPose=new T.Group();person.add(personPose);
-  let spreadPose:ReturnType<typeof createSpreadPose>|null=null,proneAmount=0,proneHeight=.25;
+  let spreadPose:ReturnType<typeof createSpreadPose>|null=null,proneHeight=.25;
   const loader=new GLTFLoader();const bones:{bone:T.Object3D;base:T.Euler;side:number;arm:boolean}[]=[];
   const disposeObject=(root:T.Object3D)=>root.traverse(o=>{if(o instanceof T.Mesh||o instanceof T.Line){o.geometry.dispose();for(const m of Array.isArray(o.material)?o.material:[o.material]){for(const value of Object.values(m))if(value instanceof T.Texture)value.dispose();m.dispose();}}});
   let loaded=0;
@@ -74,16 +77,19 @@ export function World({engine,mode='orbit',droneIndex=0}:{engine:DroneSimulation
    const bounds=new T.Box3().setFromObject(model),center=bounds.getCenter(new T.Vector3());model.position.sub(new T.Vector3(center.x,bounds.min.y,center.z));
    model.traverse(o=>{if(o instanceof T.Mesh){o.castShadow=true;o.receiveShadow=true;}if(isPerson&&o instanceof T.Bone&&/upleg|upperleg|upperarm|thigh/i.test(o.name)&&!/twist/i.test(o.name))bones.push({bone:o,base:o.rotation.clone(),side:/left|\.l|_l/i.test(o.name)?1:-1,arm:/arm/i.test(o.name)});});parent.add(model);
    if(isPerson){
-    spreadPose=createSpreadPose(model);spreadPose.apply(1);personPose.position.set(0,0,0);personPose.rotation.x=-Math.PI/2;personPose.updateWorldMatrix(true,true);
+    // Put the fall pivot at the torso, then settle the spread pose on the ground.
+    model.position.y-=engine.personHeight*.5;
+    model.traverse(o=>{if(o instanceof T.Mesh)o.frustumCulled=false;});
+    spreadPose=createSpreadPose(model);spreadPose.apply(1);personPose.position.set(0,0,0);personPose.rotation.x=Math.PI/2;person.updateMatrixWorld(true);
     model.traverse(o=>{if(o instanceof T.SkinnedMesh)o.skeleton.update();});
     proneHeight=person.position.y+.03-new T.Box3().setFromObject(personPose,true).min.y;
-    personPose.rotation.x=0;spreadPose.apply(0);
+    personPose.rotation.x=0;personPose.position.y=engine.personHeight*.5;spreadPose.apply(0);
    }else droneGroups.slice(1).forEach(group=>group.add(model.clone(true)));
    if(++loaded===2)setStatus('');
   },undefined,()=>{if(!disposed)setStatus(`Could not load ${path}. Reload to retry.`);});}
   for(const group of droneGroups)for(const x of [-.095,.095])for(const z of [-.095,.095]){
    const guard=new T.Mesh(new T.TorusGeometry(.09,.009,6,24),new T.MeshStandardMaterial({color:'#f3bd58',metalness:.5,roughness:.4}));
-   guard.rotation.x=Math.PI/2;guard.position.set(x,.045,z);guard.castShadow=true;group.add(guard);
+   guard.rotation.x=Math.PI/2;guard.position.set(x,.045,z);guard.visible=false;group.add(guard);
   }
   load('/models/runtime/drone.glb' ,drone,PHYSICAL_SCALE.droneSpan);load('/models/runtime/person.glb',personPose,engine.personHeight,true);
   const trailGeometry=new T.BufferGeometry(),trail=new T.Line(trailGeometry,new T.LineBasicMaterial({color:'#f0f7c7',transparent:true,opacity:.7}));scene.add(trail);
@@ -96,24 +102,28 @@ export function World({engine,mode='orbit',droneIndex=0}:{engine:DroneSimulation
    coverGroups.forEach(({cover,group})=>{group.visible=!cover.cleared;});
    crownGroups.forEach(({tree,group})=>{group.visible=!tree.crownCleared;});
    cuts.forEach((v,i)=>{const c=engine.map.clearings?.[i];if(c)v.set(c.x,c.z,c.radius,c.bottom);else v.set(0,0,0,1e6);});
-   const selected=engine.fleet[droneIndex]??engine,d=selected.drone,p=engine.person;engine.fleet.forEach((agent,i)=>{const group=droneGroups[i];if(!group)return;renderPosition.set(agent.drone.x,agent.drone.y,agent.drone.z);if(firstFrame||agent.phase==='Landed')group.position.copy(renderPosition);else group.position.lerp(renderPosition,alpha);desiredQuaternion.setFromEuler(desiredEuler.set(agent.flight.pitch,agent.flight.yaw,agent.flight.roll,'YXZ'));group.quaternion.slerp(desiredQuaternion,alpha);group.visible=mode!=='drone'||i!==droneIndex;});renderPosition.set(p.x,p.y,p.z);if(firstFrame||engine.missionContact)person.position.copy(renderPosition);else person.position.lerp(renderPosition,alpha);person.rotation.y=p.heading;
+   const selected=engine.fleet[droneIndex]??engine,d=selected.drone,p=engine.person;engine.fleet.forEach((agent,i)=>{const group=droneGroups[i];if(!group)return;renderPosition.set(agent.drone.x,agent.drone.y,agent.drone.z);if(firstFrame||agent.phase==='Landed')group.position.copy(renderPosition);else group.position.lerp(renderPosition,alpha);desiredQuaternion.setFromEuler(desiredEuler.set(agent.flight.pitch,agent.flight.yaw,agent.flight.roll,'YXZ'));group.quaternion.slerp(desiredQuaternion,alpha);group.visible=agent.phase!=='Landed'&&(mode!=='drone'||i!==droneIndex);});renderPosition.set(p.x,p.y,p.z);if(firstFrame||engine.missionContact)person.position.copy(renderPosition);else person.position.lerp(renderPosition,alpha);person.rotation.y=p.heading;
+   spreadPose?.apply(0);
    bones.forEach(({bone,base,side,arm})=>{bone.rotation.copy(base);bone.rotation.x+=Math.sin(engine.time*(p.speed>2?12:6))*Math.min(.65,p.speed*.2)*side*(arm?-1:1);});
-   const personDown=!!engine.missionContact;
-   proneAmount=personDown?(firstFrame?1:Math.min(1,proneAmount+dt/.65)):0;
+   const touchdown=engine.missionContact,personDown=!!touchdown;
+   const proneAmount=personCollapseProgress(touchdown?.wallTime??null,Date.now()/1000);
    if(personDown)spreadPose?.apply(proneAmount);
-   personPose.rotation.x=-Math.PI/2*proneAmount;
-   personPose.position.set(0,proneHeight*proneAmount,engine.personHeight*.5*proneAmount);
+   personPose.rotation.x=Math.PI/2*proneAmount;
+   personPose.position.set(0,T.MathUtils.lerp(engine.personHeight*.5,proneHeight,proneAmount),0);
    sensor.position.set(d.x,.08,d.z);sensor.scale.setScalar(Math.sqrt(Math.max(0,engine.sensorRange**2-d.y**2)));sensor.visible=engine.sensorEnabled&&engine.phase!=='Landed';
    targetRing.position.set(p.x,p.y+.09,p.z);targetRing.visible=selected.visible;aimRing.position.set(selected.aim.x,groundAt(selected.aim.x,selected.aim.z)+.1,selected.aim.z);aimRing.visible=engine.phase!=='Landed';
-   const effect=engine.missionExplosion,age=effect?Date.now()/1000-effect.wallTime:Infinity;
+   landingEffects.forEach(({blast,flash,shockwave,sparks,smoke},index)=>{
+   const effect=engine.fleet[index]?.explosion,age=effect?Date.now()/1000-effect.wallTime:Infinity;
    blast.visible=!!effect&&age>=0&&age<2.8;shockwave.visible=blast.visible;
    if(effect&&blast.visible){
-    blast.position.set(effect.x,effect.y+1,effect.z);
-    flash.scale.setScalar(.3+Math.min(age,.5)*5);(flash.material as T.MeshBasicMaterial).opacity=Math.max(0,1-age*3);
+    const intensity=engine.fleet[index]?.contact ? .35 : 1;
+    blast.position.set(effect.x,effect.y,effect.z);
+    flash.scale.setScalar(.3+Math.min(age,.5)*5*intensity);(flash.material as T.MeshBasicMaterial).opacity=Math.max(0,1-age*3)*intensity;
     shockwave.position.set(effect.x,effect.y+.14,effect.z);shockwave.scale.setScalar(1+age*5);(shockwave.material as T.MeshBasicMaterial).opacity=Math.max(0,.8-age*.6);
     sparks.forEach(({particle,v})=>{particle.position.copy(v).multiplyScalar(age);particle.position.y-=2.5*age*age;particle.scale.setScalar(Math.max(.05,1-age*.5));(particle.material as T.MeshBasicMaterial).opacity=Math.max(0,1-age*.7);});
-    smoke.forEach(({particle,angle},i)=>{particle.position.set(Math.sin(angle)*age*.8,age*(1.3+i*.1),Math.cos(angle)*age*.8);particle.scale.setScalar(.3+age*.9);(particle.material as T.MeshBasicMaterial).opacity=Math.min(.45,age*.9)*Math.max(0,1-age/2.8);});
+    smoke.forEach(({particle,angle},i)=>{particle.position.set(Math.sin(angle)*age*.8,age*(1.3+i*.1),Math.cos(angle)*age*.8);particle.scale.setScalar(.3+age*.9);(particle.material as T.MeshBasicMaterial).opacity=Math.min(.45,age*.9)*Math.max(0,1-age/2.8)*intensity;});
    }
+   });
    if(lastTrailLength!==selected.trail.length||lastTrailTime!==selected.history.at(-1)?.time){trailGeometry.setFromPoints(selected.trail.map(pt=>new T.Vector3(pt.x,groundAt(pt.x,pt.z)+.12,pt.z)));lastTrailLength=selected.trail.length;lastTrailTime=selected.history.at(-1)?.time??0;}
    if(mode==='top'){camera.position.set(size/2,size*1.4,size/2+.01);camera.lookAt(size/2,0,size/2);}else if(mode==='follow'){const focus=droneGroups[droneIndex]?.position??droneGroups[0].position;const desired=focus.clone().add(new T.Vector3(2.5,1.7,3.5));if(firstFrame){camera.position.copy(desired);smoothedLook.copy(focus);}else{camera.position.lerp(desired,1-Math.exp(-5*dt));smoothedLook.lerp(focus,1-Math.exp(-9*dt));}camera.lookAt(smoothedLook);}else if(mode==='person'){camera.position.set(p.x+7,p.y+6,p.z+9);camera.lookAt(p.x,p.y+1,p.z);}else if(mode==='drone'){const focus=droneGroups[droneIndex]?.position??droneGroups[0].position;camera.position.copy(focus).add(new T.Vector3(0,.08,0));const look=new T.Vector3(focus.x+Math.sin(d.heading)*12,focus.y-5,focus.z+Math.cos(d.heading)*12);if(firstFrame)smoothedLook.copy(look);else smoothedLook.lerp(look,1-Math.exp(-8*dt));camera.lookAt(smoothedLook);}else controls.update();
    firstFrame=false;renderer.render(scene,camera);raf=requestAnimationFrame(render);

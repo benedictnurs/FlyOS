@@ -2,18 +2,23 @@ export type Trench={x:number;z:number;width:number;length:number;depth:number};
 export type Tree={x:number;z:number;height:number;radius:number;crownCleared?:boolean};
 export type Hideout={x:number;z:number;radius:number;height:number;name:string;cleared?:boolean};
 export type WorldMap={size:number;seed:number;trees:Tree[];trenches:Trench[];hideouts:Hideout[];clearings?:{x:number;z:number;radius:number;bottom:number}[]};
-function randomFor(seed:number){let state=seed>>>0;return()=>{state=(state*1664525+1013904223)>>>0;return state/4294967296;};}
+function randomFor(seed:number){let state=seed>>>0;state=Math.imul(state^(state>>>16),0x21f0aaad);state=Math.imul(state^(state>>>15),0x735a2d97);state=(state^(state>>>15))>>>0;return()=>{state=(state*1664525+1013904223)>>>0;return state/4294967296;};}
 /** Chunk-seeded generation preserves existing terrain when the map expands. */
 export function generateMap(size=60,seed=8):WorldMap{
  size=Math.max(60,Math.min(150,Math.round(size/30)*30));
  const map:WorldMap={size,seed,trees:[],trenches:[],hideouts:[]};
  for(let cx=0;cx<size/30;cx++)for(let cz=0;cz<size/30;cz++){
   const random=randomFor(seed+cx*73856093+cz*19349663),x=cx*30,z=cz*30;
-  map.hideouts.push({x:x+15+random()*5,z:z+13+random()*5,radius:2.3,height:2.6,name:`Grove ${cx+1}.${cz+1}`});
-  for(let i=0;i<5;i++)map.trees.push({x:x+8+random()*16,z:z+5+random()*4,height:4+random()*2,radius:1.4+random()*.6});
-  map.hideouts.push({x:x+6+random()*3,z:z+17+random()*3,radius:1.8,height:2.4,name:`Brush ${cx+1}.${cz+1}`});
-  const horizontal=random()>.5;
-  map.trenches.push({x:x+15,z:z+24,width:horizontal?20:3,length:horizontal?3:10,depth:1+random()*.4});
+  const covers=1+Math.floor(random()*3);
+  for(let i=0;i<covers;i++)map.hideouts.push({x:x+3+random()*24,z:z+3+random()*24,radius:1.4+random()*1.8,height:1.8+random()*1.4,name:`Cover ${cx+1}.${cz+1}.${i+1}`});
+  const treeCount=4+Math.floor(random()*5);
+  for(let i=0;i<treeCount;i++){
+   const tree={x:x+2+random()*26,z:z+2+random()*26,height:3.5+random()*4,radius:1.2+random()*1.4};
+   // Keep the launch pad clear; overlapping trunks otherwise form impassable pockets.
+   if(Math.hypot(tree.x-5,tree.z-5)>3&&!map.trees.some(t=>Math.hypot(t.x-tree.x,t.z-tree.z)<1.8))map.trees.push(tree);
+  }
+  const horizontal=random()>.5,length=8+random()*14,width=2+random()*3;
+  map.trenches.push({x:x+length/2+1+random()*(28-length),z:z+length/2+1+random()*(28-length),width:horizontal?length:width,length:horizontal?width:length,depth:.7+random()*1.3});
  }
  return map;
 }
