@@ -7,6 +7,6 @@ export async function GET(){
 export async function POST(request:Request){
  const json=await request.text();
  if(json.length>200000)return Response.json({error:'Checkpoint too large'},{status:413});
- try{await writeModel(json);return Response.json({saved:true});}
+ try{await writeModel(json);const checkpoint=JSON.parse(json);return Response.json({saved:true,trainingRuns:checkpoint.drone.trainingRuns??0,savedAt:checkpoint.savedAt});}
  catch{return Response.json({error:'Could not save model checkpoint'},{status:500});}
 }

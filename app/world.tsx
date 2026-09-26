@@ -14,6 +14,30 @@ export function World({engine,mode='orbit',droneIndex=0}:{engine:DroneSimulation
   const scene=new T.Scene();scene.background=new T.Color('#cad9cf');scene.fog=new T.Fog('#cad9cf',size*1.6,size*3.5);
   let renderer:T.WebGLRenderer;
   try{renderer=new T.WebGLRenderer({antialias:true});}catch{setStatus('WebGL unavailable. Simulation telemetry is still available.');return;}
+  const audioContext=typeof window!=='undefined'?new AudioContext():null;
+  let lastExplosionId=0,lastFootstep=0,buzzGain:GainNode|null=null,buzzOscillators:OscillatorNode[]=[];
+  const tone=(frequency:number,duration:number,volume:number,type:OscillatorType='sine')=>{
+   if(!audioContext||audioContext.state!=='running')return;
+   const oscillator=audioContext.createOscillator(),gain=audioContext.createGain();oscillator.type=type;oscillator.frequency.value=frequency;gain.gain.setValueAtTime(volume,audioContext.currentTime);gain.gain.exponentialRampToValueAtTime(.001,audioContext.currentTime+duration);oscillator.connect(gain).connect(audioContext.destination);oscillator.start();oscillator.stop(audioContext.currentTime+duration);
+  };
+  const explosionSound=()=>{
+   if(!audioContext||audioContext.state!=='running')return;
+   const length=Math.floor(audioContext.sampleRate*.7),buffer=audioContext.createBuffer(1,length,audioContext.sampleRate),data=buffer.getChannelData(0);
+   for(let i=0;i<length;i++){const t=i/length;data[i]=(Math.random()*2-1)*(1-t)**2.5;}
+   const source=audioContext.createBufferSource(),filter=audioContext.createBiquadFilter(),gain=audioContext.createGain();
+   source.buffer=buffer;filter.type='lowpass';filter.frequency.setValueAtTime(420,audioContext.currentTime);filter.frequency.exponentialRampToValueAtTime(90,audioContext.currentTime+.65);gain.gain.setValueAtTime(.0001,audioContext.currentTime);gain.gain.exponentialRampToValueAtTime(.32,audioContext.currentTime+.012);gain.gain.exponentialRampToValueAtTime(.0001,audioContext.currentTime+.7);source.connect(filter).connect(gain).connect(audioContext.destination);source.start();
+   tone(48,.7,.28,'sine');tone(110,.25,.12,'triangle');
+  };
+  const footstepSound=()=>{
+   if(!audioContext||audioContext.state!=='running')return;
+   const length=Math.floor(audioContext.sampleRate*.12),buffer=audioContext.createBuffer(1,length,audioContext.sampleRate),data=buffer.getChannelData(0);
+   for(let i=0;i<length;i++)data[i]=(Math.random()*2-1)*Math.pow(1-i/length,2.2);
+   const source=audioContext.createBufferSource(),filter=audioContext.createBiquadFilter(),gain=audioContext.createGain();
+   source.buffer=buffer;filter.type='lowpass';filter.frequency.value=900;gain.gain.setValueAtTime(.0001,audioContext.currentTime);gain.gain.exponentialRampToValueAtTime(.07,audioContext.currentTime+.008);gain.gain.exponentialRampToValueAtTime(.0001,audioContext.currentTime+.12);source.connect(filter).connect(gain).connect(audioContext.destination);source.start();
+   tone(72,.09,.025,'sine');
+  };
+  const unlockAudio=()=>{if(audioContext?.state==='suspended')void audioContext.resume();};
+  window.addEventListener('pointerdown',unlockAudio,{once:false});
   renderer.setPixelRatio(Math.min(devicePixelRatio,mode==='orbit'?1.5:1.25));renderer.shadowMap.enabled=mode==='orbit';renderer.shadowMap.type=T.PCFSoftShadowMap;renderer.outputColorSpace=T.SRGBColorSpace;el.appendChild(renderer.domElement);
   const camera=new T.PerspectiveCamera(48,1,.05,size*5);camera.position.set(size*1.3,size*1.05,size*1.4);
   const controls=new OrbitControls(camera,renderer.domElement);controls.target.set(size/2,0,size/2);controls.enableDamping=true;controls.maxPolarAngle=Math.PI*.48;controls.minDistance=3;controls.maxDistance=size*2.5;controls.enabled=mode==='orbit';
@@ -98,6 +122,17 @@ export function World({engine,mode='orbit',droneIndex=0}:{engine:DroneSimulation
   const smoothedLook=new T.Vector3(),renderPosition=new T.Vector3(),desiredQuaternion=new T.Quaternion(),desiredEuler=new T.Euler(0,0,0,'YXZ');
   const render=()=>{
    const now=performance.now(),dt=Math.min(.1,(now-previousFrame)/1000);previousFrame=now;const alpha=1-Math.exp(-14*dt);
+   const flying=engine.fleet.some(agent=>agent.phase!=='Landed'&&agent.flight.thrust>.15);
+   if(audioContext&&audioContext.state==='running'){
+    if(flying){if(!buzzGain){
+     buzzGain=audioContext.createGain();buzzGain.gain.value=.0001;buzzGain.connect(audioContext.destination);
+     for(const [frequency,volume] of [[185,.012],[370,.007],[555,.003]]){const oscillator=audioContext.createOscillator();oscillator.type='sawtooth';oscillator.frequency.value=frequency;const motorGain=audioContext.createGain();motorGain.gain.value=volume;oscillator.connect(motorGain).connect(buzzGain);oscillator.start();buzzOscillators.push(oscillator);}
+     const modulator=audioContext.createOscillator(),modulationGain=audioContext.createGain();modulator.frequency.value=18;modulationGain.gain.value=28;modulator.connect(modulationGain);for(const oscillator of buzzOscillators)modulationGain.connect(oscillator.frequency);modulator.start();buzzOscillators.push(modulator);
+    }buzzGain.gain.setTargetAtTime(Math.min(.8,.18*engine.fleet.filter(agent=>agent.phase!=='Landed').length),audioContext.currentTime,.08);}
+    else if(buzzGain){buzzGain.gain.setTargetAtTime(.0001,audioContext.currentTime,.08);}
+    const latest=engine.missionExplosion;if(latest&&latest.id!==lastExplosionId){lastExplosionId=latest.id;explosionSound();}
+    if(engine.person.speed>0&&now-lastFootstep>Math.max(180,550/Math.max(1,engine.person.speed))){lastFootstep=now;footstepSound();}
+   }
 
    coverGroups.forEach(({cover,group})=>{group.visible=!cover.cleared;});
    crownGroups.forEach(({tree,group})=>{group.visible=!tree.crownCleared;});
@@ -127,7 +162,7 @@ export function World({engine,mode='orbit',droneIndex=0}:{engine:DroneSimulation
    if(lastTrailLength!==selected.trail.length||lastTrailTime!==selected.history.at(-1)?.time){trailGeometry.setFromPoints(selected.trail.map(pt=>new T.Vector3(pt.x,groundAt(pt.x,pt.z)+.12,pt.z)));lastTrailLength=selected.trail.length;lastTrailTime=selected.history.at(-1)?.time??0;}
    if(mode==='top'){camera.position.set(size/2,size*1.4,size/2+.01);camera.lookAt(size/2,0,size/2);}else if(mode==='follow'){const focus=droneGroups[droneIndex]?.position??droneGroups[0].position;const desired=focus.clone().add(new T.Vector3(2.5,1.7,3.5));if(firstFrame){camera.position.copy(desired);smoothedLook.copy(focus);}else{camera.position.lerp(desired,1-Math.exp(-5*dt));smoothedLook.lerp(focus,1-Math.exp(-9*dt));}camera.lookAt(smoothedLook);}else if(mode==='person'){camera.position.set(p.x+7,p.y+6,p.z+9);camera.lookAt(p.x,p.y+1,p.z);}else if(mode==='drone'){const focus=droneGroups[droneIndex]?.position??droneGroups[0].position;camera.position.copy(focus).add(new T.Vector3(0,.08,0));const look=new T.Vector3(focus.x+Math.sin(d.heading)*12,focus.y-5,focus.z+Math.cos(d.heading)*12);if(firstFrame)smoothedLook.copy(look);else smoothedLook.lerp(look,1-Math.exp(-8*dt));camera.lookAt(smoothedLook);}else controls.update();
    firstFrame=false;renderer.render(scene,camera);raf=requestAnimationFrame(render);
-  };resize();render();return()=>{disposed=true;cancelAnimationFrame(raf);observer.disconnect();controls.dispose();disposeObject(scene);trailGeometry.dispose();(trail.material as T.Material).dispose();foliageMaterials.forEach(m=>m.dispose());renderer.dispose();el.replaceChildren();};
+  };resize();render();return()=>{disposed=true;cancelAnimationFrame(raf);observer.disconnect();controls.dispose();disposeObject(scene);trailGeometry.dispose();(trail.material as T.Material).dispose();foliageMaterials.forEach(m=>m.dispose());renderer.dispose();if(audioContext)void audioContext.close();window.removeEventListener('pointerdown',unlockAudio);el.replaceChildren();};
  },[engine,mode,engine.map,engine.agents,droneIndex]);
  return <><div className="world" ref={host}/>{status&&<div className="model-status" role="status">{status}</div>}</>;
 }

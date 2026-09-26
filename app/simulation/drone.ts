@@ -48,6 +48,7 @@ export class DroneSimulation {
   this.landingDecision=null;this.landingCollisionPenalty=0;
  }
  private landingCommand(height:number){
+  this.brainDecisions++;
   this.landingTargetY=height;
   if(!this.landingDecision||this.time-this.landingDecisionTime>=.1){
    this.finishLandingDecision();this.landingDecision=this.brain.land(this.landingFeatures(height));
@@ -103,6 +104,7 @@ export class DroneSimulation {
   this.scanDecision=null;
  }
  private chooseScanAltitude(){
+  this.brainDecisions++;
   if(!this.dynamicAltitude){this.finishScanDecision(true);return;}
   if(!this.scanDecision||this.time-this.scanDecision.time>=4){
    this.finishScanDecision();const features=this.scanFeatures();this.scanAction=this.brain.scan(features);
@@ -127,6 +129,10 @@ export class DroneSimulation {
   this.log(`Training terrain randomized · seed ${seed}`);
  }
  generate(expand=false){this.map=generateMap(expand?this.map.size+30:this.map.size,expand?this.map.seed:this.map.seed+1);this.reset();this.log(expand?'Map expanded · new search sectors':'New map generated');}
+ shrink(){
+  const size=Math.max(60,this.map.size-30),seed=(Math.floor(Math.random()*4294967296)>>>0);
+  this.map=generateMap(size,seed);this.reset();this.personBrain.exposure={};this.log(`Map reduced · ${size} m training field`);
+ }
  samples:{time:number;drone:Position3;person:Position3;visible:boolean;phase:Phase;reward:number;thrust:number;roll:number;pitch:number}[]=[];
  exportRun(){return {schema:2,model:MODEL_VERSION,units:{distance:'m',mass:'kg',time:'s',force:'N'},scale:PHYSICAL_SCALE,map:this.map,task:this.task,landingRadius:this.landingRadius,earlyLanding:this.earlyLanding,motion:this.motion,success:this.missionSuccess,failed:this.missionFailed,landingDroneId:this.sharedBrain.landingDroneId,search:{seconds:this.searchSeconds,failure:this.searchFailure},pain:this.missionPain,contact:this.missionContact,sharedBrain:this.sharedBrain.export(),reward:this.reward,lostContacts:this.lostContacts,personBrain:{enabled:this.personBrain.enabled,awareness:this.personBrain.awareness,maxHideSeconds:this.personBrain.maxHideSeconds,hidingLimitsEnabled:this.personBrain.hidingLimitsEnabled,visibilityPenalty:this.personBrain.visibilityPenalty,timePenalty:this.personBrain.timePenalty,score:this.personBrain.score,stamina:this.personBrain.stamina,staminaCooldown:this.personBrain.staminaCooldown,stumbles:this.personBrain.stumbles,exposure:this.personBrain.exposure},drones:this.fleet.map((a,i)=>({id:i+1,success:a.success,failed:a.failed,contact:a.contact,landingSeconds:a.landingSeconds,landingTimePenalty:a.landingTimePenalty,samples:a.samples})),samples:this.samples};}
  flight=new FlightDynamics();
@@ -134,9 +140,9 @@ export class DroneSimulation {
  drone={x:5,z:5,y:0,heading:0,speed:0};
  person={x:43,y:terrainHeight(43,37),z:37,vx:0,vy:0,vz:0,speed:0,heading:0};
  motion:Motion='Stationary'; phase:Phase='Searching'; time=0; confidence=0; visible=false;
- dynamicAltitude=true;scanTargetAltitude=7;scanAction=0;
+ dynamicAltitude=true;scanTargetAltitude=7;scanAction=0;brainDecisions=0;scentRadius=0;scentStrength=0;
  private scanDecision:{features:number[];action:number;time:number;reward:number}|null=null;
- dopamine=0;
+ dopamine=0;scentDetected=false;
  sensorRange=15; sensorEnabled=true; prediction=true; altitude=7; lockSeconds=0; detections=0;
  lastSeen:({time:number;y:number;vy:number;vx:number;vz:number}&Point)|null=null;
  aim:Point={x:5,z:5}; trail:Point[]=[]; coverage=new Set<string>();
@@ -184,6 +190,7 @@ export class DroneSimulation {
   this.log('Land on person commanded · find and confirm before descent');
  }
  private nextSearchWaypoint(){
+  this.brainDecisions++;
   const reserved=new Set([...this.sharedBrain.reservations.entries()].filter(([id])=>id!==this.droneId).map(([,index])=>index));
   const candidates=this.waypoints.map((point,index)=>({index,features:this.features(point)})).filter(c=>!reserved.has(c.index)&&c.index!==this.waypoint);
   // Coverage and travel cost form a prior; shared learned values refine ordering.
@@ -262,20 +269,37 @@ export class DroneSimulation {
   p.vx=(p.x-oldX)/dt;p.vz=(p.z-oldZ)/dt;if(p.speed)p.heading=Math.atan2(p.vx,p.vz);
   }
   if(this.phase==='Landed'){this.rewardRate=0;return;}
+  const horizontalDistance=Math.hypot(p.x-d.x,p.z-d.z);
+  // Movement carries a scent/noise signal: faster footsteps are detectable from farther away.
+  const footstepRadius=this.sensorRange;
+  this.scentRadius=footstepRadius;
+  const proximity=Math.max(0,1-horizontalDistance/Math.max(footstepRadius,.001));
+  // Close-range odor is deliberately nonlinear: the last few meters produce a strong stimulus.
+  this.scentStrength=this.sensorEnabled?proximity*proximity:0;
+  this.scentDetected=this.scentStrength>0;
   this.visible=this.sensorEnabled&&Math.hypot(p.x-d.x,p.z-d.z,d.y-p.y-1)<this.sensorRange&&!sightBlocked(d,{x:p.x,y:p.y+1.4,z:p.z},this.map);
+  const detected=this.visible;
   this.pain=Math.max(0,this.pain-dt*.18);
-  if(this.visible){this.unseenSeconds=0;if(this.lockSeconds>.5)this.lossArmed=true;}
+  if(detected){this.unseenSeconds=0;if(this.lockSeconds>.5)this.lossArmed=true;}
   else{this.unseenSeconds+=dt;if(this.lossArmed&&this.unseenSeconds>.25){this.award(-10,'Pain · person lost');if(this.task==='find')this.success=false;this.pain=1;this.lostContacts++;this.lossArmed=false;}}
   const previous=this.phase;
-  if(this.visible){
+  if(detected){
    const wasLost=!this.lastSeen||this.time-this.lastSeen.time>.3;
-   if(wasLost){this.detections++;this.log('Visual contact · person detected');if(!this.foundRewarded){this.award(100,'First person found');this.foundRewarded=true;}}
+   if(wasLost){this.detections++;this.log(this.visible?'Visual contact · person detected':'Scent contact · fruit signature detected');if(!this.foundRewarded){this.award(100,'First person found');this.foundRewarded=true;}}
    const prior=this.lastSeen,elapsed=prior?this.time-prior.time:0;
    const vx=prior&&elapsed<.3?(p.x-prior.x)/elapsed:0,vz=prior&&elapsed<.3?(p.z-prior.z)/elapsed:0;
    this.lastSeen={x:p.x,y:p.y,vy:prior&&elapsed<.3?(p.y-prior.y)/elapsed:0,z:p.z,time:this.time,vx:prior?prior.vx*.6+vx*.4:0,vz:prior?prior.vz*.6+vz*.4:0};
-   this.confidence=Math.min(1,this.confidence+dt*.45);this.lockSeconds+=dt;
-  }else {this.confidence=Math.max(0,this.confidence-dt*.24);this.lockSeconds=0;}
-  if(this.visible&&this.lastSeen)this.sharedBrain.memory={...this.lastSeen};
+   this.confidence=Math.min(1,this.confidence+dt*(this.visible?.45:.25));this.lockSeconds+=dt;
+  }else {
+   if(this.scentDetected){
+    this.lastSeen={x:p.x,y:p.y,vy:p.vy,z:p.z,time:this.time,vx:p.vx,vz:p.vz};
+    // A fly-like odor cue is strong throughout the sensor radius and sharpens nearby.
+    this.dopamine=Math.min(1,this.dopamine+dt*.12*this.scentStrength);
+    this.confidence=Math.min(1,this.confidence+dt*(.3+.7*this.scentStrength));this.lockSeconds+=dt;
+    if(!this.events.some(event=>event.text.includes('Scent contact')))this.log('Scent contact · fruit signature detected');
+   }else{this.confidence=Math.max(0,this.confidence-dt*.24);this.lockSeconds=0;}
+  }
+  if(detected&&this.lastSeen)this.sharedBrain.memory={...this.lastSeen};
   if(!this.visible&&this.sharedBrain.memory&&this.time-this.sharedBrain.memory.time<2&&(!this.lastSeen||this.sharedBrain.memory.time>this.lastSeen.time))this.lastSeen={...this.sharedBrain.memory};
   const observation=this.sharedBrain.memory&&(!this.lastSeen||this.sharedBrain.memory.time>this.lastSeen.time)?this.sharedBrain.memory:this.lastSeen;
   if(!this.returnRequested&&this.committedCover&&this.brain.coverWasVacated(this.committedCover,observation,this.time)){
@@ -325,14 +349,14 @@ export class DroneSimulation {
    if(Math.hypot(d.x-this.waypoints[this.waypoint].x,d.z-this.waypoints[this.waypoint].z)<1)this.waypoint=this.nextSearchWaypoint();
    this.aim=this.waypoints[this.waypoint];
   }
-  if(this.visible&&this.confidence>=.65&&!this.confirmedRewarded){
+  if(detected&&this.confidence>=.65&&!this.confirmedRewarded){
    this.award(25,'Person confirmed');this.confirmedRewarded=true;
    this.dopamine=1;this.sharedBrain.dopamineBursts++;
    this.award(LOCK_DOPAMINE_REWARD,'Dopamine burst · target lock');
    // Consume the lock reward now so short runs also reinforce their shared weights.
    this.learn();
   }
-  if(this.task==='find'&&this.visible&&this.confidence>=.65&&!this.success){this.success=true;this.completedAt=this.time;this.log('Task success · person found and confirmed');}
+  if(this.task==='find'&&detected&&this.confidence>=.65&&!this.success){this.success=true;this.completedAt=this.time;this.log('Task success · person found and confirmed');}
   if(previous!==this.phase)this.log(`${this.phase} · ${this.reason}`);
   const landing=(this.phase==='Returning'||this.phase==='Landing'||this.phase==='Investigating')&&Math.hypot(d.x-this.aim.x,d.z-this.aim.z)<1.2;
   const personLanding=this.phase==='Landing';
@@ -370,7 +394,7 @@ export class DroneSimulation {
   this.contactSeparation=null;
   const effectDistance=Math.hypot(d.x-p.x,d.y-(p.y+this.personHeight*.5),d.z-p.z);
   const suspectedTrigger=this.phase==='Investigating'&&this.landRequested&&this.investigation&&Math.hypot(d.x-this.investigation.x,d.y-this.ground(this.investigation.x,this.investigation.z)-1,d.z-this.investigation.z)<=this.landingRadius;
-  if(this.earlyLanding&&((personLanding&&this.visible&&this.confidence>=.65&&effectDistance<=this.landingRadius)||suspectedTrigger)){
+  if(this.earlyLanding&&this.phase!=='Investigating'&&((personLanding&&(detected||this.scentDetected)&&this.confidence>=.65&&effectDistance<=this.landingRadius)||suspectedTrigger)){
    this.phase='Landed';this.completedAt=this.time;
    this.flight.vx=this.flight.vy=this.flight.vz=this.flight.thrust=d.speed=0;
    if(effectDistance<=this.landingRadius){
@@ -402,16 +426,17 @@ export class DroneSimulation {
    }
   }
   if((this.phase==='Landing'||this.phase==='Investigating')&&landing&&d.y-this.ground(d.x,d.z)<.08&&Math.abs(this.flight.vy)<.5&&(!this.visible||this.phase==='Landing')){
+   const occupiedBush=this.map.hideouts.some(cover=>Math.hypot(cover.x-p.x,cover.z-p.z)<=cover.radius&&Math.hypot(cover.x-d.x,cover.z-d.z)<=cover.radius+.35);
    clearTouchdownFoliage(d.x,d.z,this.map);
    this.phase='Landed';this.completedAt=this.time;
    d.y=this.ground(d.x,d.z);this.flight.vx=this.flight.vy=this.flight.vz=this.flight.thrust=d.speed=0;
    const distance=Math.hypot(d.x-p.x,d.z-p.z);
-   if(distance<=this.landingRadius){
+   if(distance<=this.landingRadius||occupiedBush){
     this.success=true;this.failed=false;
     this.contact={time:this.time,wallTime:Date.now()/1000,separation:distance-this.landingRadius,point:{x:d.x,y:d.y,z:d.z}};
     p.speed=p.vx=p.vy=p.vz=0;
     if(!this.landingRewarded){this.award(50,'Touchdown within person radius');this.landingRewarded=true;}
-    this.log(`Task success · person within ${this.landingRadius} m of touchdown`);
+    this.log(occupiedBush?'Task success · occupied bush touchdown':`Task success · person within ${this.landingRadius} m of touchdown`);
    }else{
     this.failed=true;this.pain=1;this.success=false;
     this.award(FAILED_LANDING_PENALTY,'Landing failed · person outside touchdown radius');

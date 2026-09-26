@@ -50,7 +50,7 @@ test('each run finalizes once and writes trained weights to a project file',asyn
   await writeModel(serializeKnowledge(next),directory);
   const saved=JSON.parse(await readModel(directory));assert.equal(saved.drone.trainingRuns,2);
   assert.ok(saved.drone.updates>engine.sharedBrain.updates);
-  assert.rejects(()=>writeModel('{"version":0}',directory));
+  await assert.rejects(()=>writeModel('{"version":0}',directory));
  }finally{await rm(directory,{recursive:true,force:true});}
 });
 

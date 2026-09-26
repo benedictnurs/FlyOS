@@ -452,3 +452,16 @@ test('successful landing gives a huge dopamine boost once and reinforces saved w
  const miss=coverMission(false);until(miss,()=>miss.failed,40);
  assert.equal(miss.landingDopamineRewarded,false);assert.equal(miss.dopamine,0);
 });
+
+
+test('drone detects person scent within configured radius through cover',()=>{
+ const sim=new DroneSimulation({size:60,seed:1,trees:[{x:15,z:15,height:6,radius:2}],trenches:[],hideouts:[]});
+ sim.landingRadius=3;sim.sensorRange=15;sim.sensorEnabled=true;sim.person.x=15;sim.person.z=15;sim.person.y=0;sim.drone={x:17.5,y:7,z:15,heading:0,speed:0};
+ sim.tick(1/120);assert.equal(sim.visible,false);assert.equal(sim.scentDetected,true);assert.ok(sim.confidence>0);assert.ok(sim.lastSeen);
+ sim.person.x=19;sim.tick(1/120);assert.equal(sim.scentDetected,false);
+});
+test('scent signal can complete a radius landing without line of sight',()=>{
+ const sim=new DroneSimulation({size:60,seed:1,trees:[{x:15,z:15,height:6,radius:2}],trenches:[],hideouts:[]});sim.setTask('find-land');sim.landingRadius=3;sim.person.x=15;sim.person.z=15;sim.person.y=0;sim.drone={x:17.5,y:3,z:15,heading:0,speed:0};
+ for(let i=0;i<600&&!sim.contact&&!sim.failed;i++)sim.tick(1/60);
+ assert.ok(sim.contact);assert.equal(sim.success,true);assert.equal(sim.scentDetected,true);
+});
